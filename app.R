@@ -1,13 +1,17 @@
 #Library
-library(reshape2)
+if (!require("reshape2")) {install.packages("reshape2")}
+if (!require("shiny")) {install.packages("shiny")}
+if (!require("ggvis")) {install.packages("ggvis")}
+if (!require("dplyr")) {install.packages("dplyr")}
 library(shiny)
-library(plotly)
-library(varhandle)
+library(ggvis)
+library(reshape2)
+library(dplyr)
 
 # load data
-le <-read.csv(text=readLines('API_SP.DYN.LE00.IN_DS2_en_csv_v2.csv')[-(1:4)],check.names=FALSE)
-tfrt <-read.csv(text=readLines('API_SP.DYN.TFRT.IN_DS2_en_csv_v2.csv')[-(1:4)],check.names=FALSE)
-pop <- read.csv(text=readLines('API_SP.POP.1564.TO.ZS_DS2_en_csv_v2.csv')[-(1:4)],check.names=FALSE)
+le <-read.csv(text=readLines('API_SP.DYN.LE00.IN_DS2_en_csv_v2.csv')[-(1:4)],check.names=FALSE, stringsAsFactors = FALSE)
+tfrt <-read.csv(text=readLines('API_SP.DYN.TFRT.IN_DS2_en_csv_v2.csv')[-(1:4)],check.names=FALSE, stringsAsFactors = FALSE)
+pop <- read.csv(text=readLines('API_SP.POP.1564.TO.ZS_DS2_en_csv_v2.csv')[-(1:4)],check.names=FALSE,stringsAsFactors = FALSE)
 metadata <- read.csv('Metadata_Country_API_SP.DYN.LE00.IN_DS2_en_csv_v2.csv')
 
 # drop useless columns
@@ -34,47 +38,85 @@ df1 <- merge(df,metadata[c("Country.Code","Region")])
 df2 <- na.omit(df1)
 df2 <- df2[which(df2$Region != ''),]
 
-slope <- 2.666051223553066e-05
-df2$size <- sqrt(df2$Population * slope)
-colors <- c('#4AC6B7', '#1972A4', '#965F8A', '#FF7070', '#C61951')
+# add a column of index and opacity
+df2$id <- 1:nrow(df2)
+df2$Opacity <- 0.1
+# for country hover
+all_values <- function(x) {
+  if(is.null(x)) return(NULL)
+  row <- data[data$id == x$id, ]
+  paste(row$Country.Name)
+}
+# select useful columns
+df2$Year <- as.integer(as.character(df2$Year))
+# fillna
+df2[is.na(df2)] <- 0
 
-# Shiny
+data <- read.csv('cleaned.csv',stringsAsFactors = FALSE)
+data[is.na(data)] <- 0
+# =============================================Shiny=============================================
+# UI
 ui <- fluidPage(
-  headerPanel('Life Expectancy vs. Fertility Rate'),
+  headerPanel('HW2_MaxineQian'),
+  
   sidebarPanel(
-    sliderInput("year", "Year:", 
-                min = 1960, max = 2014, value = 1960, step = 1, 
-                animate=animationOptions(interval=300, loop=T))
-                ),
-  mainPanel(plotlyOutput("plot1"))
+    radioButtons("region", "Region",
+                 c("All" = "All",
+                   "East Asia & Pacific" = "East Asia & Pacific",
+                   "Europe & Central Asia" = "Europe & Central Asia",
+                   "Latin America & Caribbean" = "Latin America & Caribbean",
+                   "Middle East & North Africa" = "Middle East & North Africa",
+                   "North America" = "North America",
+                   "South Asia" = "South Asia",
+                   "Sub-Saharan Africa" = "Sub-Saharan Africa")
+    ),
+    position = 'right'
+  ),
+  
+  sidebarPanel(
+    sliderInput("year", 
+                "Year", 
+                min = 1960, 
+                max = 2014, 
+                value = 1, 
+                animate = animationOptions(interval = 300)),
+    position = 'left'
+  ),
+  
+  mainPanel(
+    uiOutput("ggvis_ui"),
+    ggvisOutput("ggvis")
+  )
 )
 
+# Server
 server <- function(input, output) {
   
-  output$plot1 <- renderPlotly({
-    df2_year <- df2[which(df2$Year == input$year),]
-    plot_ly(df2_year, x = Life.Expectancy, y = Fertility.Rate, color = Region, size = size, colors = colors,
-            type = 'scatter', mode = 'markers', sizes = df2_year$size,
-            marker = list(symbol = 'circle', sizemode = 'diameter',
-                          line = list(width = 2, color = '#FFFFFF')),
-            text = paste('Country:', df2_year$Country.Name)) %>%
-      layout(
-             xaxis = list(title = 'Life Expectancy',
-                          gridcolor = 'rgb(255, 255, 255)',
-                          #range = c(2.003297660701705, 5.191505530708712),
-                          type = 'log',
-                          zerolinewidth = 1,
-                          ticklen = 5,
-                          gridwidth = 2),
-             yaxis = list(title = 'Fertility Rate',
-                          gridcolor = 'rgb(255, 255, 255)',
-                          #range = c(36.12621671352166, 91.72921793264332),
-                          zerolinewidth = 1,
-                          ticklen = 5,
-                          gridwith = 2),
-             paper_bgcolor = 'rgb(243, 243, 243)',
-             plot_bgcolor = 'rgb(243, 243, 243)')
+  yearData <- reactive({
+    data2 <- data
+    if(input$region == 'All') data2$Opacity <- 0.7
+    else{
+      data2$Opacity[data2$Region == input$region] <- 0.7
+    }
+    # filter year and select data
+    df <- 
+      data2 %>% filter(Year == input$year) %>%
+      select(Country.Name, Fertility.Rate, Life.Expectancy,
+             Region, Population, id, Opacity) %>%
+      arrange(Region)
+    return(df)
   })
+  
+  yearData %>%
+    ggvis(~Life.Expectancy, ~Fertility.Rate, size := ~Population / 500000, key := ~id, fill = ~Region, 
+          fillOpacity := ~Opacity, fillOpacity.hover := 0.5) %>%
+    add_tooltip(all_values, "hover") %>%
+    layer_points(fill = ~Region) %>%
+    add_axis("x", title = 'Life expectancy', orient = "bottom") %>%
+    add_axis("y", title = 'Fertility rate', orient = "left") %>%
+    scale_numeric("x", domain = c(20, 90), nice = T, clamp = F) %>%
+    scale_numeric("y", domain = c(1, 9), nice = T, clamp = F) %>%
+    bind_shiny("ggvis")
 }
 
 shinyApp(ui = ui, server = server)
